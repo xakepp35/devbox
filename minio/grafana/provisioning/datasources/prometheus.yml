@@ -1,0 +1,21 @@
+# API version, leave this as 1
+apiVersion: 1
+
+# List of data sources
+datasources:
+  # <string> Unique name of the data source in Grafana
+  - name: Prometheus
+    # <string> The data source type.
+    type: prometheus
+    # <string> Access mode: proxy or direct. Proxy is recommended.
+    # Proxy means the Grafana server makes the requests to Prometheus.
+    access: proxy
+    # <string> The URL of your Prometheus server.
+    # USE THE DOCKER SERVICE NAME, NOT LOCALHOST!
+    url: http://prometheus:9090
+    # <bool> Sets this as the default data source for new panels.
+    isDefault: true
+    # <int> Version of the data source. Used for migrations.
+    version: 1
+    # <bool> If true, you can't delete this data source from the UI.
+    editable: false
