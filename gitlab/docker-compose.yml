@@ -1,147 +1,43 @@
+
 services:
-  # -------------------------
-  # Postgres for GitLab (separate DB)
-  # -------------------------
-  gitlab-postgres:
-    image: postgres:15
-    container_name: gitlab-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=${GITLAB_POSTGRES_USER}
-      - POSTGRES_PASSWORD=${GITLAB_POSTGRES_PASSWORD}
-      - POSTGRES_DB=${GITLAB_POSTGRES_DB}
-    volumes:
-      - gitlab_pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL","pg_isready -U ${GITLAB_POSTGRES_USER} -d ${GITLAB_POSTGRES_DB} || exit 1"]
-      interval: 30s
-      retries: 5
-
-  # -------------------------
-  # Redis for GitLab (separate instance)
-  # -------------------------
-  gitlab-redis:
-    image: redis:7-alpine
-    container_name: gitlab-redis
-    restart: unless-stopped
-    command: ["redis-server", "--requirepass", "${GITLAB_REDIS_PASSWORD}"]
-    volumes:
-      - gitlab_redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${GITLAB_REDIS_PASSWORD}", "ping"]
-      interval: 30s
-      retries: 5
-
-
-
-  # -------------------------
-  # GitLab Omnibus (uses external Postgres & Redis)
-  # -------------------------
   gitlab:
     image: gitlab/gitlab-ce:latest
     container_name: gitlab
-    restart: unless-stopped
-    depends_on:
-      - gitlab-postgres
-      - gitlab-redis
-      - minio
-    environment:
-      TZ: ${TZ}
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url '${GITLAB_EXTERNAL_URL}'
-        gitlab_rails['initial_root_password'] = "${GITLAB_ROOT_PASSWORD}"
-        # Подключаем external Postgres
-        postgresql['enable'] = false
-        gitlab_rails['db_adapter'] = 'postgresql'
-        gitlab_rails['db_encoding'] = 'unicode'
-        gitlab_rails['db_database'] = '${GITLAB_POSTGRES_DB}'
-        gitlab_rails['db_username'] = '${GITLAB_POSTGRES_USER}'
-        gitlab_rails['db_password'] = '${GITLAB_POSTGRES_PASSWORD}'
-        gitlab_rails['db_host'] = 'gitlab-postgres'
-        gitlab_rails['db_port'] = 5432
-        # Redis settings
-        gitlab_rails['redis_host'] = 'gitlab-redis'
-        gitlab_rails['redis_port'] = 6379
-        gitlab_rails['redis_password'] = '${GITLAB_REDIS_PASSWORD}'
-        # S3-compatible backup (MinIO)
-        gitlab_rails['backup_upload_connection'] = {
-          'provider' => 'AWS',
-          'region' => '${MINIO_REGION}',
-          'aws_access_key_id' => '${MINIO_ROOT_USER}',
-          'aws_secret_access_key' => '${MINIO_ROOT_PASSWORD}',
-          'endpoint' => 'http://minio:9000',
-          'force_path_style' => true
-        }
-        gitlab_rails['backup_upload_remote_directory'] = '${MINIO_BUCKET}'
+    restart: always
+    hostname: gitlab.example.com
     ports:
       - "80:80"
       - "443:443"
-      - "2222:22"
+      - "22:22"
     volumes:
-      - gitlab_config:/etc/gitlab
-      - gitlab_logs:/var/log/gitlab
-      - gitlab_data:/var/opt/gitlab
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost/-/readiness || exit 1"]
-      interval: 30s
-      retries: 5
-
-  # -------------------------
-  # Backup worker for GitLab (simple loop) — создает full backup и загружает в MinIO
-  # -------------------------
-  gitlab-backup:
-    image: alpine:3.19
-    container_name: gitlab-backup
-    restart: unless-stopped
+      - './config.rb:/etc/gitlab/gitlab.rb:ro'
+      - 'gitlab-data:/var/opt/gitlab'
+      - 'gitlab-logs:/var/log/gitlab'
+      - 'gitlab-config:/etc/gitlab'
+    env_file:
+      - .env
     depends_on:
-      - gitlab
-      - minio
+      - gitlab-postgres
+      - gitlab-redis
+
+  gitlab-postgres:
+    image: postgres:15
     environment:
-      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
-      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
-      - AWS_REGION=${MINIO_REGION}
-      - MINIO_URL=http://minio:9000
-      - BACKUP_REPO=${MINIO_BUCKET}
-      - RETENTION_DAYS=${RETENTION_DAYS}
-      - INTERVAL_HOURS=${GITLAB_BACKUP_CRON_HOURS}
+      POSTGRES_DB: "${GITLAB_POSTGRES_DB}"
+      POSTGRES_USER: "${GITLAB_POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${GITLAB_POSTGRES_PASSWORD}"
     volumes:
-      - gitlab_data:/var/opt/gitlab   # нужен доступ к backup-файлам внутри gitlab контейнера
-      - /var/run/docker.sock:/var/run/docker.sock:ro   # требуется для управления gitlab container
-    command: >
-      /bin/sh -c "
-      apk add --no-cache curl bash ca-certificates py3-pip && pip3 install awscli --no-cache-dir &&
-      while true; do
-        echo '>>> creating GitLab backup';
-        # запускаем backup внутри gitlab container
-        docker_sh='gitlab-rake gitlab:backup:create STRATEGY=copy';
-        # Если в окружении docker недоступен, используем kubernetes/host approach.
-        # Здесь простой способ: используем gitlab-ctl to run inside container
-        docker exec gitlab sh -lc \"gitlab-rake gitlab:backup:create STRATEGY=copy\" || true;
-        # ищем последний бэкап в томе
-        latest=$(ls -1t /var/opt/gitlab/backups/*.tar | head -n1 2>/dev/null);
-        if [ -n \"$latest\" ]; then
-          echo '>>> uploading' $latest 'to minio';
-          aws --endpoint-url=${MINIO_URL} s3 cp \"$latest\" s3://${BACKUP_REPO}/ || echo 'upload failed';
-        else
-          echo '>>> no backup produced';
-        fi
-        # retention cleanup
-        aws --endpoint-url=${MINIO_URL} s3 ls s3://${BACKUP_REPO}/ | awk '{print $4}' | while read f; do
-          # parse date from name if used; fallback remove older than retention via lifecycle in MinIO (preferable)
-          true;
-        done
-        sleep $((INTERVAL_HOURS*3600));
-      done
-      "
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - 'postgres-data:/var/lib/postgresql/data'
+
+  gitlab-redis:
+    image: redis:7
+    command: [ "redis-server", "--requirepass", "${GITLAB_REDIS_PASSWORD}" ]
+    volumes:
+      - 'redis-data:/data'
 
 volumes:
-  gitlab_pgdata:
-  gitlab_redisdata:
-  gitlab_config:
-  gitlab_logs:
-  gitlab_data:
-  minio_data:
+  gitlab-data:
+  gitlab-logs:
+  gitlab-config:
+  postgres-data:
+  redis-data:
