@@ -10,6 +10,7 @@ services:
     networks:
       - app-network
     environment:
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
     command: server /data --console-address ":9001"
@@ -19,6 +20,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s 
+
   create-minio-buckets:
     image: minio/mc
     container_name: minio_init
@@ -35,8 +37,43 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
     entrypoint: ["/bin/sh", "/init-buckets.sh"]
 
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - app-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:9.5.15
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    networks:
+      - app-network
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+    depends_on:
+      - prometheus
+
 volumes:
   minio_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   app-network:
