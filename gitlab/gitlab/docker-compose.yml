@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: always
+    hostname: git.dev.box
+    ports:
+      - "80:80"
+      - "443:443"
+      - "22:22"
+    volumes:
+      - "./config.rb:/etc/gitlab/gitlab.rb:ro"
+      - "gitlab-data:/var/opt/gitlab"
+      - "gitlab-logs:/var/log/gitlab"
+      - "gitlab-config:/etc/gitlab"
+    env_file:
+      - ".env"
+    depends_on:
+      - gitlab-postgres
+      - gitlab-redis
+
+  gitlab-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: gitlabhq_production
+      POSTGRES_USER: gitlab
+      POSTGRES_PASSWORD: P.Xtf(!d-tp9/
+    volumes:
+      - "postgres-data:/var/lib/postgresql/data"
+
+  gitlab-redis:
+    image: redis:7
+    command: [ "redis-server", "--requirepass", "&r%E5DSwD:ip:" ]
+    volumes:
+      - "redis-data:/data"
+
+volumes:
+  gitlab-data:
+  gitlab-logs:
+  gitlab-config:
+  postgres-data:
+  redis-data:
