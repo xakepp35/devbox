@@ -1,0 +1,50 @@
+version: "3.8"
+services:
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    restart: unless-stopped
+    environment:
+      INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx1g -XX:MaxDirectMemorySize=512m"
+    ports:
+      - "${NEXUS_HTTP_PORT:-8081}:8081"
+    volumes:
+      - nexus_data:/nexus-data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/ || exit 1"]
+      interval: 30s
+      retries: 5
+
+  nexus-backup:
+    image: alpine:3.19
+    container_name: nexus-backup
+    depends_on:
+      - nexus
+      - minio
+    environment:
+      - MINIO_URL=http://minio:9000
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_ACCESS=${MINIO_ROOT_USER}
+      - MINIO_SECRET=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - nexus_data:/nexus-data:ro
+    command: >
+      /bin/sh -c "
+      apk add --no-cache curl bash py3-pip &&
+      pip3 install awscli --no-cache-dir &&
+      while true; do
+        ts=$(date +%FT%H%M%S);
+        echo '>>> creating nexus archive';
+        tar -C /nexus-data -czf /tmp/nexus-backup-$ts.tar.gz . || true;
+        aws --endpoint-url=${MINIO_URL} s3 cp /tmp/nexus-backup-$ts.tar.gz s3://${MINIO_BUCKET}/nexus-backups/ || echo 'upload failed';
+        rm -f /tmp/nexus-backup-*.tar.gz;
+        sleep 86400;
+      done
+      "
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  nexus_data:

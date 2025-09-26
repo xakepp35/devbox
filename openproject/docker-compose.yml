@@ -1,0 +1,68 @@
+version: "3.8"
+services:
+  openproject-postgres:
+    image: postgres:15
+    container_name: openproject-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${OPENPROJECT_DB_USER}
+      - POSTGRES_PASSWORD=${OPENPROJECT_DB_PASS}
+      - POSTGRES_DB=${OPENPROJECT_DB_NAME}
+    volumes:
+      - openproject_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U ${OPENPROJECT_DB_USER} -d ${OPENPROJECT_DB_NAME} || exit 1"]
+      interval: 30s
+      retries: 5
+
+  openproject:
+    image: openproject/community:latest
+    container_name: openproject
+    restart: unless-stopped
+    depends_on:
+      - openproject-postgres
+    environment:
+      - SECRET_KEY_BASE=${OPENPROJECT_SECRET_KEY_BASE}
+      - DATABASE_URL=postgresql://${OPENPROJECT_DB_USER}:${OPENPROJECT_DB_PASS}@openproject-postgres:5432/${OPENPROJECT_DB_NAME}
+    ports:
+      - "${OPENPROJECT_HTTP_PORT:-8082}:80"
+    volumes:
+      - openproject_data:/var/openproject/assets
+    healthcheck:
+      test: ["CMD-SHELL","wget -qO- http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      retries: 5
+
+  openproject-backup:
+    image: alpine:3.19
+    container_name: openproject-backup
+    depends_on:
+      - openproject-postgres
+      - minio
+    environment:
+      - MINIO_URL=http://minio:9000
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_ACCESS=${MINIO_ROOT_USER}
+      - MINIO_SECRET=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - openproject_pgdata:/var/lib/postgresql/data:ro
+      - openproject_data:/var/openproject/assets:ro
+    command: >
+      /bin/sh -c "
+      apk add --no-cache postgresql-client py3-pip bash &&
+      pip3 install awscli --no-cache-dir &&
+      while true; do
+        ts=$(date +%FT%H%M%S);
+        echo '>>> dumping openproject db';
+        PGPASSWORD=${OPENPROJECT_DB_PASS} pg_dump -h openproject-postgres -U ${OPENPROJECT_DB_USER} ${OPENPROJECT_DB_NAME} -f /tmp/openproject-db-$ts.sql || true;
+        tar -C /tmp -czf /tmp/openproject-assets-$ts.tar.gz /var/openproject/assets || true;
+        aws --endpoint-url=${MINIO_URL} s3 cp /tmp/openproject-db-$ts.sql s3://${MINIO_BUCKET}/openproject/ || true;
+        aws --endpoint-url=${MINIO_URL} s3 cp /tmp/openproject-assets-$ts.tar.gz s3://${MINIO_BUCKET}/openproject/ || true;
+        rm -f /tmp/openproject-db-*.sql /tmp/openproject-assets-*.tar.gz;
+        sleep 86400;
+      done
+      "
+
+volumes:
+  openproject_pgdata:
+  openproject_data:
